@@ -1,0 +1,33 @@
+# Dependencies
+/build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+pubspec.lock
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Environment - IMPORTANT: Keep credentials secret!
+.env
+*.env.local
+
+# Platform specific
+android/.gradle/
+android/local.properties
+android/app/debug/
+android/app/release/
+ios/Pods/
+ios/.symlinks/
+
+# Generated
+*.g.dart
+*.freezed.dart
+
+# Test
+coverage/
