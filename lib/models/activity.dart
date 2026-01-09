@@ -153,6 +153,8 @@ class Activity {
     switch (type) {
       case 'run':
         return 'Run';
+      case 'walk':
+        return 'Walk';
       case 'bike':
         return 'Bike Ride';
       case 'hike':

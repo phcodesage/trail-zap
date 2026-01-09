@@ -1,4 +1,5 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:postgrest/postgrest.dart';
 import 'package:trailzap/models/activity.dart';
 import 'package:trailzap/models/profile.dart';
 
@@ -78,18 +79,20 @@ class SupabaseService {
     if (currentUserId == null) return [];
 
     try {
-      var query = _client
+      PostgrestFilterBuilder query = _client
           .from('activities')
           .select()
-          .eq('user_id', currentUserId!)
-          .order('start_time', ascending: false)
-          .range(offset, offset + limit - 1);
+          .eq('user_id', currentUserId!);
 
       if (type != null) {
         query = query.eq('type', type);
       }
+      
+      final orderedQuery = query
+          .order('start_time', ascending: false)
+          .range(offset, offset + limit - 1);
 
-      final response = await query;
+      final response = await orderedQuery;
       return (response as List).map((json) => Activity.fromJson(json)).toList();
     } catch (e) {
       print('Error getting activities: $e');
@@ -204,8 +207,11 @@ class SupabaseService {
         .from('activities')
         .stream(primaryKey: ['id'])
         .eq('user_id', currentUserId!)
-        .order('start_time', ascending: false)
-        .map((list) => list.map((json) => Activity.fromJson(json)).toList());
+        .map((list) {
+          // Sort client-side since stream doesn't support order
+          list.sort((a, b) => (b['start_time'] as String).compareTo(a['start_time'] as String));
+          return list.map((json) => Activity.fromJson(json)).toList();
+        });
   }
 
   // ==================== STATS OPERATIONS ====================

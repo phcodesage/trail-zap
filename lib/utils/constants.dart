@@ -10,7 +10,7 @@ class AppConstants {
   static String get supabaseAnonKey => dotenv.env['SUPABASE_ANON_KEY'] ?? '';
 
   // Activity Types
-  static const List<String> activityTypes = ['run', 'bike', 'hike'];
+  static const List<String> activityTypes = ['run', 'walk', 'bike', 'hike'];
 
   // Map Settings
   static const double defaultZoom = 15.0;
@@ -41,9 +41,10 @@ class AppColors {
   static const Color textMuted = Color(0xFF757575);
 
   // Activity Type Colors
-  static const Color runColor = Color(0xFF4CAF50);
-  static const Color bikeColor = Color(0xFF2196F3);
-  static const Color hikeColor = Color(0xFFFF9800);
+  static const Color runColor = Color(0xFF4CAF50);  // Green
+  static const Color walkColor = Color(0xFF9C27B0); // Purple
+  static const Color bikeColor = Color(0xFF2196F3); // Blue
+  static const Color hikeColor = Color(0xFFFF9800); // Orange
 
   // Gradients
   static const LinearGradient primaryGradient = LinearGradient(
@@ -68,6 +69,8 @@ class AppColors {
     switch (type) {
       case 'run':
         return runColor;
+      case 'walk':
+        return walkColor;
       case 'bike':
         return bikeColor;
       case 'hike':

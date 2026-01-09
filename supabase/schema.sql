@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS public.activities (
   
   -- Basic info
   name TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('run', 'bike', 'hike')),
+  type TEXT NOT NULL CHECK (type IN ('run', 'walk', 'bike', 'hike')),
   description TEXT,
   
   -- Metrics
@@ -341,6 +341,7 @@ SELECT
   COALESCE(SUM(a.duration_secs), 0) AS total_duration_secs,
   COALESCE(SUM(a.elevation_gain), 0) AS total_elevation_gain,
   COUNT(CASE WHEN a.type = 'run' THEN 1 END) AS total_runs,
+  COUNT(CASE WHEN a.type = 'walk' THEN 1 END) AS total_walks,
   COUNT(CASE WHEN a.type = 'bike' THEN 1 END) AS total_rides,
   COUNT(CASE WHEN a.type = 'hike' THEN 1 END) AS total_hikes
 FROM public.profiles p

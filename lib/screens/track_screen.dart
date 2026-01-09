@@ -3,11 +3,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:gap/gap.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:trailzap/services/tracking_service.dart';
+import 'package:trailzap/services/location_service.dart';
+import 'package:trailzap/providers/activities_provider.dart';
 import 'package:trailzap/utils/constants.dart';
 import 'package:trailzap/widgets/gradient_button.dart';
+import 'package:trailzap/widgets/map_polyline.dart';
 
-enum TrackingState { idle, tracking, paused }
+/// Provider for tracking service
+final trackingServiceProvider = ChangeNotifierProvider<TrackingService>((ref) {
+  return TrackingService.instance;
+});
 
 class TrackScreen extends ConsumerStatefulWidget {
   const TrackScreen({super.key});
@@ -18,15 +27,10 @@ class TrackScreen extends ConsumerStatefulWidget {
 
 class _TrackScreenState extends ConsumerState<TrackScreen>
     with TickerProviderStateMixin {
-  TrackingState _trackingState = TrackingState.idle;
-  String _selectedActivityType = 'run';
-  
-  // Tracking metrics
-  Duration _duration = Duration.zero;
-  double _distance = 0.0;
-  Timer? _timer;
-  
   late AnimationController _pulseController;
+  final MapController _mapController = MapController();
+  bool _isInitializing = false;
+  String? _errorMessage;
 
   @override
   void initState() {
@@ -35,62 +39,99 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
       vsync: this,
       duration: const Duration(milliseconds: 1500),
     )..repeat();
+
+    // Request location permission on load
+    _checkLocationPermission();
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
     _pulseController.dispose();
+    _mapController.dispose();
     super.dispose();
   }
 
-  void _startTracking() {
-    HapticFeedback.heavyImpact();
+  Future<void> _checkLocationPermission() async {
+    final locationService = LocationService.instance;
+    final hasPermission = await locationService.hasPermission();
+    if (!hasPermission) {
+      final permission = await locationService.requestPermission();
+      if (permission.toString().contains('denied')) {
+        setState(() {
+          _errorMessage = 'Location permission required for tracking';
+        });
+      }
+    }
+  }
+
+  Future<void> _startTracking() async {
+    final tracking = ref.read(trackingServiceProvider);
+    
     setState(() {
-      _trackingState = TrackingState.tracking;
+      _isInitializing = true;
+      _errorMessage = null;
     });
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+
+    HapticFeedback.heavyImpact();
+
+    final success = await tracking.startTracking();
+
+    setState(() {
+      _isInitializing = false;
+    });
+
+    if (!success) {
       setState(() {
-        _duration += const Duration(seconds: 1);
-        // Simulate distance increment (will be replaced with real GPS)
-        _distance += 0.002 + (0.001 * (timer.tick % 5));
+        _errorMessage = 'Failed to start GPS tracking. Please check location permissions.';
       });
-    });
+      _showErrorSnackbar('Could not start tracking. Check GPS settings.');
+    }
   }
 
   void _pauseTracking() {
     HapticFeedback.mediumImpact();
-    _timer?.cancel();
-    setState(() {
-      _trackingState = TrackingState.paused;
-    });
+    ref.read(trackingServiceProvider).pauseTracking();
   }
 
   void _resumeTracking() {
     HapticFeedback.mediumImpact();
-    setState(() {
-      _trackingState = TrackingState.tracking;
-    });
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      setState(() {
-        _duration += const Duration(seconds: 1);
-        _distance += 0.002 + (0.001 * (timer.tick % 5));
-      });
-    });
+    ref.read(trackingServiceProvider).resumeTracking();
   }
 
-  void _stopTracking() {
+  Future<void> _stopTracking() async {
     HapticFeedback.heavyImpact();
-    _timer?.cancel();
     
-    // Show save dialog
-    _showSaveDialog();
+    final tracking = ref.read(trackingServiceProvider);
+    final result = await tracking.stopTracking();
+
+    if (result != null) {
+      _showSaveDialog(result);
+    }
   }
 
-  void _showSaveDialog() {
-    final nameController = TextEditingController(
-      text: '${_getActivityTypeName()} - ${_formatDate(DateTime.now())}',
+  void _showErrorSnackbar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.error_outline, color: Colors.red),
+            const Gap(12),
+            Expanded(child: Text(message)),
+          ],
+        ),
+        backgroundColor: AppColors.darkCard,
+        action: SnackBarAction(
+          label: 'Settings',
+          onPressed: () {
+            LocationService.instance.openLocationSettings();
+          },
+        ),
+      ),
     );
+  }
+
+  void _showSaveDialog(TrackingResult result) {
+    final nameController = TextEditingController(text: result.defaultName);
 
     showModalBottomSheet(
       context: context,
@@ -121,15 +162,44 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
                 ),
               ),
               const Gap(24),
-              const Text(
-                'Save Activity',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary,
-                ),
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.getActivityColor(result.activityType).withAlpha(30),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                      _getActivityIcon(result.activityType),
+                      color: AppColors.getActivityColor(result.activityType),
+                      size: 24,
+                    ),
+                  ),
+                  const Gap(16),
+                  const Expanded(
+                    child: Text(
+                      'Save Activity',
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                  ),
+                ],
               ),
               const Gap(24),
+              
+              // Mini map preview
+              if (result.mapPolyline.isNotEmpty)
+                MiniMapPreview(
+                  encodedPolyline: result.mapPolyline,
+                  height: 120,
+                ),
+              
+              const Gap(20),
+
               TextField(
                 controller: nameController,
                 style: const TextStyle(color: AppColors.textPrimary),
@@ -139,6 +209,7 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
                 ),
               ),
               const Gap(24),
+
               // Summary stats
               Container(
                 padding: const EdgeInsets.all(16),
@@ -151,47 +222,54 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
                   children: [
                     _SummaryStat(
                       label: 'Distance',
-                      value: '${_distance.toStringAsFixed(2)} km',
+                      value: '${result.distanceKm.toStringAsFixed(2)} km',
                     ),
-                    Container(
-                      width: 1,
-                      height: 40,
-                      color: AppColors.darkDivider,
-                    ),
+                    Container(width: 1, height: 40, color: AppColors.darkDivider),
                     _SummaryStat(
                       label: 'Duration',
-                      value: _formatDuration(_duration),
+                      value: _formatDuration(Duration(seconds: result.durationSecs)),
                     ),
-                    Container(
-                      width: 1,
-                      height: 40,
-                      color: AppColors.darkDivider,
-                    ),
+                    Container(width: 1, height: 40, color: AppColors.darkDivider),
                     _SummaryStat(
                       label: 'Pace',
-                      value: _formatPace(),
+                      value: '${result.paceMinPerKm.isFinite ? result.paceMinPerKm.toStringAsFixed(1) : '--'} /km',
                     ),
                   ],
                 ),
               ),
               const Gap(24),
+
               GradientButton(
-                onPressed: () {
-                  // TODO: Save to Supabase
-                  Navigator.of(context).pop();
-                  Navigator.of(context).pop();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Row(
-                        children: [
-                          const Icon(Icons.check_circle, color: AppColors.primaryGreen),
-                          const Gap(12),
-                          const Text('Activity saved!'),
-                        ],
-                      ),
-                      backgroundColor: AppColors.darkCard,
-                    ),
+                onPressed: () async {
+                  // Save to Supabase
+                  final activity = await ref.read(activitiesProvider.notifier).addActivity(
+                    name: nameController.text.isNotEmpty ? nameController.text : result.defaultName,
+                    type: result.activityType,
+                    distanceKm: result.distanceKm,
+                    durationSecs: result.durationSecs,
+                    startTime: result.startTime,
+                    endTime: result.endTime,
+                    mapPolyline: result.mapPolyline,
+                    elevationGain: result.elevationGain,
                   );
+
+                  if (mounted) {
+                    Navigator.of(context).pop();
+                    Navigator.of(context).pop();
+                    
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Row(
+                          children: [
+                            const Icon(Icons.check_circle, color: AppColors.primaryGreen),
+                            const Gap(12),
+                            Text(activity != null ? 'Activity saved!' : 'Saved locally'),
+                          ],
+                        ),
+                        backgroundColor: AppColors.darkCard,
+                      ),
+                    );
+                  }
                 },
                 child: const Text('Save Activity'),
               ),
@@ -231,61 +309,34 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
           ),
           TextButton(
             onPressed: () {
-              Navigator.pop(context); // Close dialog
-              Navigator.pop(context); // Close track screen
+              ref.read(trackingServiceProvider).discardTracking();
+              Navigator.pop(context);
+              Navigator.pop(context);
             },
-            child: const Text(
-              'Discard',
-              style: TextStyle(color: Colors.red),
-            ),
+            child: const Text('Discard', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
     );
   }
 
-  String _getActivityTypeName() {
-    switch (_selectedActivityType) {
-      case 'run':
-        return 'Run';
-      case 'bike':
-        return 'Bike Ride';
-      case 'hike':
-        return 'Hike';
-      default:
-        return 'Activity';
-    }
-  }
-
-  String _formatDate(DateTime date) {
-    final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
-                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    return '${months[date.month - 1]} ${date.day}';
-  }
-
   String _formatDuration(Duration duration) {
     final hours = duration.inHours;
     final minutes = duration.inMinutes.remainder(60);
     final seconds = duration.inSeconds.remainder(60);
-    
+
     if (hours > 0) {
       return '$hours:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
     }
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
-  String _formatPace() {
-    if (_distance < 0.01) return '--:--';
-    final paceMinutes = (_duration.inSeconds / 60) / _distance;
-    final mins = paceMinutes.floor();
-    final secs = ((paceMinutes - mins) * 60).round();
-    return '$mins:${secs.toString().padLeft(2, '0')} /km';
-  }
-
   IconData _getActivityIcon(String type) {
     switch (type) {
       case 'run':
         return Icons.directions_run_rounded;
+      case 'walk':
+        return Icons.directions_walk_rounded;
       case 'bike':
         return Icons.directions_bike_rounded;
       case 'hike':
@@ -297,18 +348,21 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
 
   @override
   Widget build(BuildContext context) {
+    final tracking = ref.watch(trackingServiceProvider);
+    final isTracking = tracking.state != TrackingState.idle;
+
     return Scaffold(
       backgroundColor: AppColors.darkBackground,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
-        leading: _trackingState == TrackingState.idle
+        leading: tracking.state == TrackingState.idle
             ? IconButton(
                 icon: const Icon(Icons.close_rounded),
                 onPressed: () => Navigator.of(context).pop(),
               )
             : null,
         automaticallyImplyLeading: false,
-        title: _trackingState != TrackingState.idle
+        title: isTracking
             ? Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -320,9 +374,9 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
                         height: 12,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: _trackingState == TrackingState.tracking
-                              ? AppColors.primaryGreen.withOpacity(
-                                  0.5 + 0.5 * _pulseController.value)
+                          color: tracking.state == TrackingState.tracking
+                              ? AppColors.primaryGreen.withAlpha(
+                                  (128 + 127 * _pulseController.value).toInt())
                               : AppColors.primaryOrange,
                         ),
                       );
@@ -330,11 +384,9 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
                   ),
                   const Gap(8),
                   Text(
-                    _trackingState == TrackingState.tracking
-                        ? 'Recording'
-                        : 'Paused',
+                    tracking.state == TrackingState.tracking ? 'Recording' : 'Paused',
                     style: TextStyle(
-                      color: _trackingState == TrackingState.tracking
+                      color: tracking.state == TrackingState.tracking
                           ? AppColors.primaryGreen
                           : AppColors.primaryOrange,
                       fontWeight: FontWeight.w600,
@@ -343,53 +395,48 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
                 ],
               )
             : null,
+        actions: isTracking
+            ? [
+                IconButton(
+                  icon: const Icon(Icons.my_location),
+                  onPressed: () {
+                    if (tracking.currentPosition != null) {
+                      _mapController.move(
+                        LatLng(
+                          tracking.currentPosition!.latitude,
+                          tracking.currentPosition!.longitude,
+                        ),
+                        17,
+                      );
+                    }
+                  },
+                ),
+              ]
+            : null,
       ),
       body: SafeArea(
         child: Column(
           children: [
-            // Map placeholder
+            // Map
             Expanded(
               flex: 3,
               child: Container(
                 margin: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.darkCard,
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: AppColors.darkDivider),
-                ),
-                child: Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.map_outlined,
-                        size: 48,
-                        color: AppColors.textMuted,
-                      ),
-                      const Gap(12),
-                      Text(
-                        _trackingState == TrackingState.idle
-                            ? 'Map will appear here'
-                            : 'GPS Tracking Active',
-                        style: TextStyle(color: AppColors.textSecondary),
-                      ),
-                    ],
-                  ),
-                ),
+                child: _buildMap(tracking),
               ),
             ),
 
             // Metrics
             Expanded(
               flex: 2,
-              child: _buildMetricsPanel(),
+              child: _buildMetricsPanel(tracking),
             ),
 
             // Controls
-            if (_trackingState == TrackingState.idle)
-              _buildActivitySelector()
+            if (tracking.state == TrackingState.idle)
+              _buildActivitySelector(tracking)
             else
-              _buildTrackingControls(),
+              _buildTrackingControls(tracking),
 
             const Gap(32),
           ],
@@ -398,21 +445,82 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
     );
   }
 
-  Widget _buildMetricsPanel() {
+  Widget _buildMap(TrackingService tracking) {
+    // Convert track points to LatLng
+    final routePoints = tracking.trackPoints
+        .map((p) => LatLng(p.latitude, p.longitude))
+        .toList();
+
+    LatLng? currentPos;
+    if (tracking.currentPosition != null) {
+      currentPos = LatLng(
+        tracking.currentPosition!.latitude,
+        tracking.currentPosition!.longitude,
+      );
+    }
+
+    if (tracking.state == TrackingState.idle && currentPos == null) {
+      // Show placeholder when not tracking
+      return Container(
+        decoration: BoxDecoration(
+          color: AppColors.darkCard,
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: AppColors.darkDivider),
+        ),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (_isInitializing)
+                const CircularProgressIndicator(color: AppColors.primaryGreen)
+              else ...[
+                Icon(
+                  Icons.map_outlined,
+                  size: 48,
+                  color: AppColors.textMuted,
+                ),
+                const Gap(12),
+                Text(
+                  _errorMessage ?? 'Start tracking to see the map',
+                  style: TextStyle(color: AppColors.textSecondary),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(24),
+      child: MapPolylineWidget(
+        points: routePoints,
+        currentPosition: currentPos,
+        controller: _mapController,
+        zoom: 17,
+        height: double.infinity,
+        interactive: true,
+        showCurrentLocation: true,
+      ),
+    );
+  }
+
+  Widget _buildMetricsPanel(TrackingService tracking) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16),
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         color: AppColors.darkCard,
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: AppColors.darkDivider.withOpacity(0.5)),
+        border: Border.all(color: AppColors.darkDivider.withAlpha(128)),
       ),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           // Duration
           Text(
-            _formatDuration(_duration),
+            tracking.formatDuration(),
             style: const TextStyle(
               fontSize: 56,
               fontWeight: FontWeight.w300,
@@ -420,15 +528,12 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
               letterSpacing: -2,
             ),
           ).animate().fadeIn(),
-          
+
           const Gap(8),
-          
-          Text(
+
+          const Text(
             'Duration',
-            style: TextStyle(
-              fontSize: 14,
-              color: AppColors.textSecondary,
-            ),
+            style: TextStyle(fontSize: 14, color: AppColors.textSecondary),
           ),
 
           const Gap(24),
@@ -438,21 +543,24 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               _MetricColumn(
-                value: _distance.toStringAsFixed(2),
+                value: tracking.distanceKm.toStringAsFixed(2),
                 unit: 'km',
                 label: 'Distance',
                 color: AppColors.runColor,
               ),
-              Container(
-                width: 1,
-                height: 50,
-                color: AppColors.darkDivider,
-              ),
+              Container(width: 1, height: 50, color: AppColors.darkDivider),
               _MetricColumn(
-                value: _formatPace().split(' ')[0],
+                value: tracking.formatPace(),
                 unit: '/km',
                 label: 'Pace',
                 color: AppColors.bikeColor,
+              ),
+              Container(width: 1, height: 50, color: AppColors.darkDivider),
+              _MetricColumn(
+                value: tracking.elevationGain.toStringAsFixed(0),
+                unit: 'm',
+                label: 'Elevation',
+                color: AppColors.hikeColor,
               ),
             ],
           ),
@@ -461,7 +569,7 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
     ).animate().fadeIn(delay: 200.ms).slideY(begin: 0.1);
   }
 
-  Widget _buildActivitySelector() {
+  Widget _buildActivitySelector(TrackingService tracking) {
     return Column(
       children: [
         // Activity type selector
@@ -473,13 +581,13 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
             borderRadius: BorderRadius.circular(20),
           ),
           child: Row(
-            children: ['run', 'bike', 'hike'].map((type) {
-              final isSelected = _selectedActivityType == type;
+            children: ['run', 'walk', 'bike', 'hike'].map((type) {
+              final isSelected = tracking.activityType == type;
               return Expanded(
                 child: GestureDetector(
                   onTap: () {
                     HapticFeedback.selectionClick();
-                    setState(() => _selectedActivityType = type);
+                    tracking.setActivityType(type);
                   },
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 200),
@@ -489,7 +597,7 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
                           ? LinearGradient(
                               colors: [
                                 AppColors.getActivityColor(type),
-                                AppColors.getActivityColor(type).withOpacity(0.7),
+                                AppColors.getActivityColor(type).withAlpha(178),
                               ],
                             )
                           : null,
@@ -500,21 +608,15 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
                       children: [
                         Icon(
                           _getActivityIcon(type),
-                          color: isSelected
-                              ? Colors.white
-                              : AppColors.textSecondary,
+                          color: isSelected ? Colors.white : AppColors.textSecondary,
                           size: 20,
                         ),
                         const Gap(8),
                         Text(
                           type[0].toUpperCase() + type.substring(1),
                           style: TextStyle(
-                            color: isSelected
-                                ? Colors.white
-                                : AppColors.textSecondary,
-                            fontWeight: isSelected
-                                ? FontWeight.w600
-                                : FontWeight.normal,
+                            color: isSelected ? Colors.white : AppColors.textSecondary,
+                            fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
                           ),
                         ),
                       ],
@@ -532,25 +634,23 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: GradientButton(
-            onPressed: _startTracking,
+            onPressed: _isInitializing ? null : _startTracking,
+            isLoading: _isInitializing,
             gradient: LinearGradient(
               colors: [
-                AppColors.getActivityColor(_selectedActivityType),
-                AppColors.getActivityColor(_selectedActivityType).withOpacity(0.7),
+                AppColors.getActivityColor(tracking.activityType),
+                AppColors.getActivityColor(tracking.activityType).withAlpha(178),
               ],
             ),
             height: 64,
-            child: Row(
+            child: const Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.play_arrow_rounded, size: 28),
-                const Gap(8),
-                const Text(
+                Icon(Icons.play_arrow_rounded, size: 28),
+                Gap(8),
+                Text(
                   'Start',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
               ],
             ),
@@ -560,7 +660,7 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
     ).animate().fadeIn(delay: 300.ms);
   }
 
-  Widget _buildTrackingControls() {
+  Widget _buildTrackingControls(TrackingService tracking) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 32),
       child: Row(
@@ -576,18 +676,18 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
 
           // Pause/Resume button
           _ControlButton(
-            icon: _trackingState == TrackingState.tracking
+            icon: tracking.state == TrackingState.tracking
                 ? Icons.pause_rounded
                 : Icons.play_arrow_rounded,
-            label: _trackingState == TrackingState.tracking ? 'Pause' : 'Resume',
+            label: tracking.state == TrackingState.tracking ? 'Pause' : 'Resume',
             color: AppColors.primaryGreen,
             size: 80,
-            onPressed: _trackingState == TrackingState.tracking
+            onPressed: tracking.state == TrackingState.tracking
                 ? _pauseTracking
                 : _resumeTracking,
           ),
 
-          // Lock button (placeholder)
+          // Lock button
           _ControlButton(
             icon: Icons.lock_outline_rounded,
             label: 'Lock',
@@ -623,23 +723,21 @@ class _MetricColumn extends StatelessWidget {
       children: [
         Row(
           crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Text(
               value,
               style: TextStyle(
-                fontSize: 32,
+                fontSize: 24,
                 fontWeight: FontWeight.w300,
                 color: color,
               ),
             ),
             Padding(
-              padding: const EdgeInsets.only(bottom: 4),
+              padding: const EdgeInsets.only(bottom: 2),
               child: Text(
                 unit,
-                style: TextStyle(
-                  fontSize: 14,
-                  color: AppColors.textSecondary,
-                ),
+                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
               ),
             ),
           ],
@@ -647,10 +745,7 @@ class _MetricColumn extends StatelessWidget {
         const Gap(4),
         Text(
           label,
-          style: TextStyle(
-            fontSize: 12,
-            color: AppColors.textSecondary,
-          ),
+          style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
         ),
       ],
     );
@@ -687,23 +782,16 @@ class _ControlButton extends StatelessWidget {
             height: size,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: color.withOpacity(0.15),
+              color: color.withAlpha(38),
               border: Border.all(color: color, width: 3),
             ),
-            child: Icon(
-              icon,
-              color: color,
-              size: size * 0.45,
-            ),
+            child: Icon(icon, color: color, size: size * 0.45),
           ),
         ),
         const Gap(8),
         Text(
           label,
-          style: TextStyle(
-            fontSize: 12,
-            color: AppColors.textSecondary,
-          ),
+          style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
         ),
       ],
     );
@@ -714,10 +802,7 @@ class _SummaryStat extends StatelessWidget {
   final String label;
   final String value;
 
-  const _SummaryStat({
-    required this.label,
-    required this.value,
-  });
+  const _SummaryStat({required this.label, required this.value});
 
   @override
   Widget build(BuildContext context) {
@@ -734,10 +819,7 @@ class _SummaryStat extends StatelessWidget {
         const Gap(4),
         Text(
           label,
-          style: TextStyle(
-            fontSize: 12,
-            color: AppColors.textSecondary,
-          ),
+          style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
         ),
       ],
     );
