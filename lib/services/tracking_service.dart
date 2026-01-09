@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:trailzap/services/location_service.dart';
+import 'package:trailzap/services/notification_service.dart';
 import 'package:trailzap/utils/polyline_utils.dart';
 
 /// Activity tracking state
@@ -13,6 +14,7 @@ class TrackingService extends ChangeNotifier {
   static final TrackingService instance = TrackingService._();
 
   final LocationService _locationService = LocationService.instance;
+  final NotificationService _notificationService = NotificationService.instance;
   StreamSubscription<Position>? _positionSubscription;
 
   // Tracking state
@@ -106,14 +108,20 @@ class TrackingService extends ChangeNotifier {
     // Listen to position updates
     _positionSubscription = _locationService.positionStream.listen(_onPositionUpdate);
 
-    // Start duration timer
+    // Start duration timer with notification updates
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       _duration += const Duration(seconds: 1);
+      _updateNotification();
       notifyListeners();
     });
 
     _state = TrackingState.tracking;
     notifyListeners();
+
+    // Show initial notification
+    await _notificationService.showTrackingNotification(
+      activityType: _activityType,
+    );
 
     return true;
   }
@@ -125,6 +133,16 @@ class TrackingService extends ChangeNotifier {
     _timer?.cancel();
     _positionSubscription?.pause();
     _state = TrackingState.paused;
+    
+    // Update notification to show paused state
+    _notificationService.updateTrackingNotification(
+      activityType: _activityType,
+      duration: formatDuration(),
+      distance: '${distanceKm.toStringAsFixed(2)} km',
+      pace: formatPace(),
+      isPaused: true,
+    );
+    
     notifyListeners();
   }
 
@@ -139,6 +157,10 @@ class TrackingService extends ChangeNotifier {
 
     _positionSubscription?.resume();
     _state = TrackingState.tracking;
+    
+    // Update notification to show resumed state
+    _updateNotification();
+    
     notifyListeners();
   }
 
@@ -149,6 +171,9 @@ class TrackingService extends ChangeNotifier {
     _timer?.cancel();
     await _positionSubscription?.cancel();
     await _locationService.stopTracking();
+    
+    // Cancel notification
+    await _notificationService.cancelTrackingNotification();
 
     _endTime = DateTime.now();
     _state = TrackingState.idle;
@@ -187,9 +212,21 @@ class TrackingService extends ChangeNotifier {
     _timer?.cancel();
     _positionSubscription?.cancel();
     _locationService.stopTracking();
+    _notificationService.cancelTrackingNotification();
     _reset();
     _state = TrackingState.idle;
     notifyListeners();
+  }
+  
+  /// Update notification with current metrics
+  void _updateNotification() {
+    _notificationService.updateTrackingNotification(
+      activityType: _activityType,
+      duration: formatDuration(),
+      distance: '${distanceKm.toStringAsFixed(2)} km',
+      pace: formatPace(),
+      isPaused: false,
+    );
   }
 
   /// Handle position updates
@@ -306,6 +343,7 @@ class TrackingResult {
   String get defaultName {
     final typeNames = {
       'run': 'Run',
+      'walk': 'Walk',
       'bike': 'Bike Ride',
       'hike': 'Hike',
     };
