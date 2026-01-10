@@ -7,6 +7,7 @@ import 'package:trailzap/screens/splash_screen.dart';
 import 'package:trailzap/screens/auth/login_screen.dart';
 import 'package:trailzap/screens/home_screen.dart';
 import 'package:trailzap/utils/constants.dart';
+import 'package:trailzap/widgets/connectivity_banner.dart';
 
 class TrailZapApp extends ConsumerWidget {
   const TrailZapApp({super.key});
@@ -27,7 +28,9 @@ class TrailZapApp extends ConsumerWidget {
       title: 'TrailZap',
       debugShowCheckedModeBanner: false,
       theme: _buildDarkTheme(),
-      home: const AuthWrapper(),
+      home: const ConnectivityBanner(
+        child: AuthWrapper(),
+      ),
     );
   }
 

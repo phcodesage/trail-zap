@@ -1,6 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:trailzap/models/activity.dart';
+import 'package:trailzap/services/connectivity_service.dart';
+import 'package:trailzap/services/local_storage_service.dart';
 import 'package:trailzap/services/supabase_service.dart';
+import 'package:trailzap/services/sync_service.dart';
 
 /// Provider for Supabase service instance
 final supabaseServiceProvider = Provider<SupabaseService>((ref) {
@@ -39,6 +43,9 @@ class ActivitiesNotifier extends StateNotifier<AsyncValue<List<Activity>>> {
   }
 
   SupabaseService get _supabase => _ref.read(supabaseServiceProvider);
+  ConnectivityService get _connectivity => ConnectivityService.instance;
+  LocalStorageService get _localStorage => LocalStorageService.instance;
+  SyncService get _syncService => SyncService.instance;
 
   /// Load all activities
   Future<void> loadActivities({String? type}) async {
@@ -62,7 +69,7 @@ class ActivitiesNotifier extends StateNotifier<AsyncValue<List<Activity>>> {
     }
   }
 
-  /// Add a new activity
+  /// Add a new activity (offline-first)
   Future<Activity?> addActivity({
     required String name,
     required String type,
@@ -75,30 +82,60 @@ class ActivitiesNotifier extends StateNotifier<AsyncValue<List<Activity>>> {
     int? avgHr,
     String? description,
   }) async {
-    try {
-      final activity = await _supabase.saveActivity(
-        name: name,
-        type: type,
-        distanceKm: distanceKm,
-        durationSecs: durationSecs,
-        startTime: startTime,
-        endTime: endTime,
-        mapPolyline: mapPolyline,
-        elevationGain: elevationGain,
-        avgHr: avgHr,
-        description: description,
-      );
+    // Check if we're online
+    final isOnline = _connectivity.isOnline;
+    
+    if (isOnline) {
+      // Online: Try to save directly to Supabase
+      try {
+        final activity = await _supabase.saveActivity(
+          name: name,
+          type: type,
+          distanceKm: distanceKm,
+          durationSecs: durationSecs,
+          startTime: startTime,
+          endTime: endTime,
+          mapPolyline: mapPolyline,
+          elevationGain: elevationGain,
+          avgHr: avgHr,
+          description: description,
+        );
 
-      if (activity != null) {
-        // Add to current list
-        final currentActivities = state.value ?? [];
-        state = AsyncValue.data([activity, ...currentActivities]);
+        if (activity != null) {
+          // Add to current list
+          final currentActivities = state.value ?? [];
+          state = AsyncValue.data([activity, ...currentActivities]);
+          return activity;
+        }
+      } catch (e) {
+        debugPrint('Failed to save online, falling back to local: $e');
+        // Fall through to offline save
       }
-
-      return activity;
-    } catch (e) {
-      return null;
     }
+    
+    // Offline or failed: Save locally
+    debugPrint('Saving activity locally (offline mode)');
+    final localId = await _localStorage.savePendingActivity(
+      name: name,
+      type: type,
+      distanceKm: distanceKm,
+      durationSecs: durationSecs,
+      startTime: startTime,
+      endTime: endTime,
+      mapPolyline: mapPolyline,
+      elevationGain: elevationGain,
+      avgHr: avgHr,
+      description: description,
+    );
+    
+    debugPrint('Saved locally with ID: $localId');
+    
+    // If we're online, try to sync immediately
+    if (isOnline) {
+      _syncService.syncPendingActivities();
+    }
+    
+    return null; // Return null to indicate local save (not synced yet)
   }
 
   /// Update an activity

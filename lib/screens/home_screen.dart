@@ -3,8 +3,13 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:gap/gap.dart';
+import 'package:intl/intl.dart';
+import 'package:trailzap/models/activity.dart';
 import 'package:trailzap/providers/auth_provider.dart';
+import 'package:trailzap/providers/activities_provider.dart';
 import 'package:trailzap/screens/track_screen.dart';
+import 'package:trailzap/screens/activities_screen.dart';
+import 'package:trailzap/screens/activity_detail_screen.dart';
 import 'package:trailzap/utils/constants.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -18,6 +23,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final user = ref.watch(authProvider).value;
+    final activitiesAsync = ref.watch(activitiesProvider);
 
     return Scaffold(
       backgroundColor: AppColors.darkBackground,
@@ -44,8 +50,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ),
       body: RefreshIndicator(
         onRefresh: () async {
-          // TODO: Refresh activities
-          await Future.delayed(const Duration(seconds: 1));
+          // Force refresh by refreshing the activities
+          await ref.read(activitiesProvider.notifier).refresh();
+          ref.invalidate(userStatsProvider);
         },
         color: AppColors.primaryGreen,
         backgroundColor: AppColors.darkCard,
@@ -54,6 +61,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             // Welcome Header
             SliverToBoxAdapter(
               child: _buildWelcomeHeader(user?.email ?? 'Athlete'),
+            ),
+
+            // Quick Action Buttons
+            SliverToBoxAdapter(
+              child: _buildQuickActions(),
             ),
 
             // Stats Summary
@@ -77,7 +89,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       ),
                     ),
                     TextButton(
-                      onPressed: () {},
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const ActivitiesScreen(),
+                          ),
+                        );
+                      },
                       child: const Text('See All'),
                     ),
                   ],
@@ -85,10 +104,38 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ),
             ),
 
-            // Activities List (Empty State for now)
-            SliverToBoxAdapter(
-              child: _buildEmptyState(),
+            // Activities List
+            activitiesAsync.when(
+              data: (activities) {
+                if (activities.isEmpty) {
+                  return SliverToBoxAdapter(
+                    child: _buildEmptyState(),
+                  );
+                }
+                return SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) => _ActivityCard(
+                      activity: activities[index],
+                    ).animate().fadeIn(delay: (100 * index).ms).slideX(begin: 0.05),
+                    childCount: activities.length.clamp(0, 10), // Show max 10
+                  ),
+                );
+              },
+              loading: () => const SliverToBoxAdapter(
+                child: Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(40),
+                    child: CircularProgressIndicator(color: AppColors.primaryGreen),
+                  ),
+                ),
+              ),
+              error: (error, stack) => SliverToBoxAdapter(
+                child: _buildErrorState(error.toString()),
+              ),
             ),
+            
+            // Bottom padding
+            const SliverToBoxAdapter(child: Gap(100)),
           ],
         ),
       ),
@@ -114,11 +161,43 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               },
               transitionDuration: const Duration(milliseconds: 400),
             ),
-          );
+          ).then((_) {
+            // Refresh activities and stats when returning from track screen
+            ref.read(activitiesProvider.notifier).refresh();
+            ref.invalidate(userStatsProvider);
+          });
         },
         backgroundColor: AppColors.primaryGreen,
         icon: const Icon(Icons.add_rounded),
         label: const Text('Start Activity'),
+      ),
+    );
+  }
+  
+  Widget _buildErrorState(String error) {
+    return Container(
+      margin: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.red.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.red.withOpacity(0.3)),
+      ),
+      child: Column(
+        children: [
+          const Icon(Icons.error_outline, color: Colors.red, size: 40),
+          const Gap(12),
+          Text(
+            'Failed to load activities',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          const Gap(8),
+          Text(
+            error,
+            style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+            textAlign: TextAlign.center,
+          ),
+        ],
       ),
     );
   }
@@ -160,7 +239,96 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
+  Widget _buildQuickActions() {
+    return Container(
+      height: 100,
+      margin: const EdgeInsets.only(top: 8),
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        children: [
+          _QuickActionButton(
+            icon: Icons.directions_run_rounded,
+            label: 'Run',
+            color: AppColors.runColor,
+            onTap: () => _startActivityWithType('run'),
+          ),
+          _QuickActionButton(
+            icon: Icons.directions_bike_rounded,
+            label: 'Bike',
+            color: AppColors.bikeColor,
+            onTap: () => _startActivityWithType('bike'),
+          ),
+          _QuickActionButton(
+            icon: Icons.terrain_rounded,
+            label: 'Hike',
+            color: AppColors.hikeColor,
+            onTap: () => _startActivityWithType('hike'),
+          ),
+          _QuickActionButton(
+            icon: Icons.directions_walk_rounded,
+            label: 'Walk',
+            color: AppColors.walkColor,
+            onTap: () => _startActivityWithType('walk'),
+          ),
+        ],
+      ),
+    ).animate().fadeIn(delay: 150.ms).slideX(begin: 0.1);
+  }
+
+  void _startActivityWithType(String type) {
+    HapticFeedback.mediumImpact();
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            TrackScreen(initialActivityType: type),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0.0, 1.0),
+              end: Offset.zero,
+            ).animate(CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutCubic,
+            )),
+            child: child,
+          );
+        },
+        transitionDuration: const Duration(milliseconds: 400),
+      ),
+    ).then((_) {
+      ref.read(activitiesProvider.notifier).refresh();
+      ref.invalidate(userStatsProvider);
+    });
+  }
+
   Widget _buildStatsSummary() {
+    final statsAsync = ref.watch(userStatsProvider);
+    
+    return statsAsync.when(
+      data: (stats) {
+        final totalDistance = (stats?['total_distance_km'] as num?)?.toDouble() ?? 0.0;
+        final totalActivities = (stats?['total_activities'] as num?)?.toInt() ?? 0;
+        final totalDurationSecs = (stats?['total_duration_secs'] as num?)?.toInt() ?? 0;
+        final totalMins = totalDurationSecs ~/ 60;
+        
+        return _buildStatsCard(
+          distance: totalDistance,
+          activities: totalActivities,
+          minutes: totalMins,
+        );
+      },
+      loading: () => _buildStatsCard(distance: 0.0, activities: 0, minutes: 0, isLoading: true),
+      error: (_, __) => _buildStatsCard(distance: 0.0, activities: 0, minutes: 0),
+    );
+  }
+
+  Widget _buildStatsCard({
+    required double distance,
+    required int activities,
+    required int minutes,
+    bool isLoading = false,
+  }) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 20),
       padding: const EdgeInsets.all(20),
@@ -175,6 +343,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: AppColors.darkDivider.withOpacity(0.5)),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primaryGreen.withOpacity(0.05),
+            blurRadius: 20,
+            offset: const Offset(0, 10),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -184,7 +359,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: AppColors.primaryGreen.withOpacity(0.15),
+                  gradient: LinearGradient(
+                    colors: [
+                      AppColors.primaryGreen.withOpacity(0.2),
+                      AppColors.primaryGreen.withOpacity(0.1),
+                    ],
+                  ),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(
@@ -202,28 +382,51 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   color: AppColors.textPrimary,
                 ),
               ),
+              const Spacer(),
+              if (isLoading)
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: AppColors.primaryGreen.withOpacity(0.5),
+                  ),
+                ),
             ],
           ),
-          const Gap(20),
+          const Gap(24),
           Row(
             children: [
-              _StatItem(
+              _AnimatedStatItem(
                 label: 'Distance',
-                value: '0.0',
+                value: distance.toStringAsFixed(1),
                 unit: 'km',
                 color: AppColors.runColor,
+                icon: Icons.straighten_rounded,
               ),
-              _StatItem(
+              Container(
+                width: 1,
+                height: 50,
+                color: AppColors.darkDivider.withOpacity(0.5),
+              ),
+              _AnimatedStatItem(
                 label: 'Activities',
-                value: '0',
+                value: activities.toString(),
                 unit: '',
                 color: AppColors.bikeColor,
+                icon: Icons.flag_rounded,
               ),
-              _StatItem(
+              Container(
+                width: 1,
+                height: 50,
+                color: AppColors.darkDivider.withOpacity(0.5),
+              ),
+              _AnimatedStatItem(
                 label: 'Time',
-                value: '0',
-                unit: 'min',
+                value: minutes > 60 ? '${minutes ~/ 60}h ${minutes % 60}' : minutes.toString(),
+                unit: minutes > 60 ? '' : 'min',
                 color: AppColors.hikeColor,
+                icon: Icons.timer_rounded,
               ),
             ],
           ),
@@ -434,6 +637,313 @@ class _ProfileMenuItem extends StatelessWidget {
         HapticFeedback.lightImpact();
         onTap();
       },
+    );
+  }
+}
+
+/// Activity card widget for displaying individual activities
+class _ActivityCard extends StatelessWidget {
+  final Activity activity;
+
+  const _ActivityCard({required this.activity});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = AppColors.getActivityColor(activity.type);
+    final icon = _getActivityIcon(activity.type);
+    
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+      decoration: BoxDecoration(
+        color: AppColors.darkCard,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.darkDivider.withOpacity(0.5)),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () {
+            HapticFeedback.lightImpact();
+            Navigator.of(context).push(
+              PageRouteBuilder(
+                pageBuilder: (context, animation, secondaryAnimation) =>
+                    ActivityDetailScreen(activity: activity),
+                transitionsBuilder:
+                    (context, animation, secondaryAnimation, child) {
+                  return FadeTransition(
+                    opacity: animation,
+                    child: SlideTransition(
+                      position: Tween<Offset>(
+                        begin: const Offset(0.05, 0),
+                        end: Offset.zero,
+                      ).animate(CurvedAnimation(
+                        parent: animation,
+                        curve: Curves.easeOutCubic,
+                      )),
+                      child: child,
+                    ),
+                  );
+                },
+                transitionDuration: const Duration(milliseconds: 300),
+              ),
+            );
+          },
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                // Activity type icon
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(icon, color: color, size: 24),
+                ),
+                const Gap(16),
+                // Activity details
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        activity.name,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textPrimary,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const Gap(4),
+                      Text(
+                        _formatDate(activity.startTime),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textMuted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                // Stats
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          activity.distanceKm.toStringAsFixed(2),
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: color,
+                          ),
+                        ),
+                        Text(
+                          ' km',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const Gap(4),
+                    Text(
+                      _formatDuration(activity.durationSecs),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textMuted,
+                      ),
+                    ),
+                  ],
+                ),
+                const Gap(8),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  color: AppColors.textMuted,
+                  size: 20,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  IconData _getActivityIcon(String type) {
+    switch (type) {
+      case 'run':
+        return Icons.directions_run_rounded;
+      case 'walk':
+        return Icons.directions_walk_rounded;
+      case 'bike':
+        return Icons.directions_bike_rounded;
+      case 'hike':
+        return Icons.terrain_rounded;
+      default:
+        return Icons.fitness_center_rounded;
+    }
+  }
+
+  String _formatDate(DateTime date) {
+    final now = DateTime.now();
+    final diff = now.difference(date);
+    
+    if (diff.inDays == 0) {
+      return 'Today, ${DateFormat.jm().format(date)}';
+    } else if (diff.inDays == 1) {
+      return 'Yesterday, ${DateFormat.jm().format(date)}';
+    } else if (diff.inDays < 7) {
+      return DateFormat('EEEE, h:mm a').format(date);
+    } else {
+      return DateFormat('MMM d, yyyy').format(date);
+    }
+  }
+
+  String _formatDuration(int seconds) {
+    final hours = seconds ~/ 3600;
+    final mins = (seconds % 3600) ~/ 60;
+    final secs = seconds % 60;
+    
+    if (hours > 0) {
+      return '${hours}h ${mins}m';
+    }
+    return '${mins}:${secs.toString().padLeft(2, '0')}';
+  }
+}
+
+/// Quick action button for starting specific activity types
+class _QuickActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _QuickActionButton({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(16),
+          child: Container(
+            width: 80,
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  color.withOpacity(0.15),
+                  color.withOpacity(0.05),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: color.withOpacity(0.3)),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(icon, color: color, size: 22),
+                ),
+                const Gap(8),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: color,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Animated stat item with icon for the weekly stats section
+class _AnimatedStatItem extends StatelessWidget {
+  final String label;
+  final String value;
+  final String unit;
+  final Color color;
+  final IconData icon;
+
+  const _AnimatedStatItem({
+    required this.label,
+    required this.value,
+    required this.unit,
+    required this.color,
+    required this.icon,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Column(
+        children: [
+          Icon(icon, color: color.withOpacity(0.7), size: 18),
+          const Gap(8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                value,
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                ),
+              ),
+              if (unit.isNotEmpty) 
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2, left: 2),
+                  child: Text(
+                    unit,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const Gap(4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              color: AppColors.textSecondary,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -19,7 +19,9 @@ final trackingServiceProvider = ChangeNotifierProvider<TrackingService>((ref) {
 });
 
 class TrackScreen extends ConsumerStatefulWidget {
-  const TrackScreen({super.key});
+  final String? initialActivityType;
+  
+  const TrackScreen({super.key, this.initialActivityType});
 
   @override
   ConsumerState<TrackScreen> createState() => _TrackScreenState();
@@ -42,6 +44,19 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
 
     // Request location permission on load
     _checkLocationPermission();
+    
+    // Set initial activity type if provided
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final tracking = ref.read(trackingServiceProvider);
+      
+      // Reset state if idle (clears previous activity's metrics)
+      tracking.resetIfIdle();
+      
+      if (widget.initialActivityType != null) {
+        tracking.setActivityType(widget.initialActivityType!);
+      }
+      _checkForRecoverableSession();
+    });
   }
 
   @override
@@ -49,6 +64,107 @@ class _TrackScreenState extends ConsumerState<TrackScreen>
     _pulseController.dispose();
     _mapController.dispose();
     super.dispose();
+  }
+
+  Future<void> _checkForRecoverableSession() async {
+    final tracking = ref.read(trackingServiceProvider);
+    if (tracking.hasRecoverableSession) {
+      final sessionInfo = tracking.recoveredSessionInfo;
+      if (sessionInfo != null && mounted) {
+        _showRecoveryDialog(sessionInfo);
+      }
+    }
+  }
+
+  void _showRecoveryDialog(Map<String, dynamic> sessionInfo) {
+    final durationSecs = sessionInfo['duration_secs'] as int? ?? 0;
+    final distanceMeters = (sessionInfo['distance_meters'] as num?)?.toDouble() ?? 0;
+    final activityType = sessionInfo['activity_type'] as String? ?? 'Activity';
+    
+    final duration = Duration(seconds: durationSecs);
+    final mins = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final secs = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
+    final distanceKm = (distanceMeters / 1000).toStringAsFixed(2);
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppColors.darkCard,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Icon(Icons.restore, color: AppColors.primaryOrange),
+            const SizedBox(width: 12),
+            const Text('Session Found'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'You have an unfinished ${activityType.toUpperCase()} session:',
+              style: const TextStyle(color: AppColors.textSecondary),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.darkBackground,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  Column(
+                    children: [
+                      Text('$mins:$secs', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                      const Text('Duration', style: TextStyle(fontSize: 12, color: AppColors.textMuted)),
+                    ],
+                  ),
+                  Container(width: 1, height: 40, color: AppColors.darkDivider),
+                  Column(
+                    children: [
+                      Text('$distanceKm km', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                      const Text('Distance', style: TextStyle(fontSize: 12, color: AppColors.textMuted)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Would you like to continue this session?',
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await ref.read(trackingServiceProvider).discardRecoveredSession();
+            },
+            child: const Text('Discard', style: TextStyle(color: Colors.red)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              HapticFeedback.mediumImpact();
+              final success = await ref.read(trackingServiceProvider).recoverSession();
+              if (success && mounted) {
+                // Session recovered in paused state
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Session restored! Tap Resume to continue.')),
+                );
+              }
+            },
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _checkLocationPermission() async {

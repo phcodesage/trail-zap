@@ -12,6 +12,7 @@ class Activity {
   final double elevationGain;
   final int? avgHr;
   final DateTime createdAt;
+  final String? description;
 
   Activity({
     required this.id,
@@ -27,6 +28,7 @@ class Activity {
     this.elevationGain = 0,
     this.avgHr,
     required this.createdAt,
+    this.description,
   });
 
   factory Activity.fromJson(Map<String, dynamic> json) {
@@ -48,6 +50,7 @@ class Activity {
       elevationGain: (json['elevation_gain'] as num?)?.toDouble() ?? 0,
       avgHr: json['avg_hr'] as int?,
       createdAt: DateTime.parse(json['created_at'] as String),
+      description: json['description'] as String?,
     );
   }
 
@@ -66,6 +69,7 @@ class Activity {
       'elevation_gain': elevationGain,
       'avg_hr': avgHr,
       'created_at': createdAt.toIso8601String(),
+      'description': description,
     };
   }
 
@@ -83,6 +87,7 @@ class Activity {
       'map_polyline': mapPolyline,
       'elevation_gain': elevationGain,
       'avg_hr': avgHr,
+      'description': description,
     };
   }
 
@@ -100,6 +105,7 @@ class Activity {
     double? elevationGain,
     int? avgHr,
     DateTime? createdAt,
+    String? description,
   }) {
     return Activity(
       id: id ?? this.id,
@@ -115,6 +121,7 @@ class Activity {
       elevationGain: elevationGain ?? this.elevationGain,
       avgHr: avgHr ?? this.avgHr,
       createdAt: createdAt ?? this.createdAt,
+      description: description ?? this.description,
     );
   }
 

@@ -151,6 +151,8 @@ class SupabaseService {
         'description': description,
         'is_manual_entry': isManualEntry,
       };
+      
+      print('Saving activity with type: $type, name: $name');
 
       final response = await _client
           .from('activities')
@@ -158,7 +160,11 @@ class SupabaseService {
           .select()
           .single();
 
+      print('Activity saved successfully!');
       return Activity.fromJson(response);
+    } on PostgrestException catch (e) {
+      print('PostgrestException saving activity: ${e.code} - ${e.message} - ${e.details}');
+      rethrow;
     } catch (e) {
       print('Error saving activity: $e');
       return null;
